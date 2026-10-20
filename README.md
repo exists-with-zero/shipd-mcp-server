@@ -2,8 +2,9 @@
 
 An open-source, self-hosted [Model Context Protocol](https://modelcontextprotocol.io)
 server that lets an AI assistant build and change real web apps by
-conversation, with a team of five AI specialists who talk you through the
-build. It powers **Shipd for Alexa+**, our entry for the Amazon Developer
+conversation, with a team of AI specialists who talk you through the
+build, and who you can staff by conversation too: interview a candidate in
+their own voice, hire them onto the team, let anyone go. It powers **Shipd for Alexa+**, our entry for the Amazon Developer
 Hackathon (Alexa+ track), and it also works in Claude as a custom connector.
 
 It is a working reference for the newer parts of the MCP spec (2025-11-25)
@@ -13,6 +14,8 @@ in one server, on the official TypeScript SDK 1.31.0:
 - **Elicitation** (form mode) for one clarifying question before a build
 - **MCP Apps**: a live build card that becomes a "team room", with audio
 - **OAuth 2.1** discovery so Claude can add it as a connector
+- **Staffing tools** (`team_roster`, `interview_candidate`, `hire_specialist`,
+  `fire_teammate`, `rehire_teammate`): the AI Team, staffed by conversation
 - Streamable HTTP, hardened for public hosting (host checks, rate limits, no batches)
 
 Each part came with a gap in the docs or the SDK; the workaround is in the code
@@ -56,6 +59,11 @@ and change real apps in a person's Shipd account.
 | `get_app_link` | Link that opens the app in Shipd (for the owner, signed in) | read only |
 | `share_app` | Public link anyone can open without an account (`/s/<token>`); says if files were held back as secrets, and if visitors use the app's real data | |
 | `stop_sharing` | Turn off every share link to an app | |
+| `team_roster` | Who works on the person's AI Team builds, in order, plus who they let go and who is on the bench (never the members' emails) | read only |
+| `interview_candidate` | Interview a specialist before hiring (a copywriter, an SEO expert): the assistant drafts a name, title and brief, the candidate answers in character, short and made to be heard (on Shipd's voice page, in their own voice). Nothing is saved | read only |
+| `hire_specialist` | Hire them: they work after Maya, Theo, Ren or Devin, and their notes go to Devin and Sam from the next team build (on every build, or one app) | |
+| `fire_teammate` | Let anyone go, one of the five or someone they hired; team builds skip their part. Letting Sam go means nobody builds the app, and the reply says so | destructive |
+| `rehire_teammate` | Bring anyone back | |
 
 `build_with_team` needs the backend's team job (`TEAM_JOB_ENABLED` plus the
 org on `TEAM_JOB_ORG_IDS`, with Team Mode on). Without it the tool says so and
@@ -70,6 +78,16 @@ repeats a build.
 
 If a build cannot start (a plan limit, a rate limit), the project the same call
 just created is deleted again, so a refused build never leaves an empty app.
+
+The staffing tools use the same routes as the builder's Team office
+(`/api/v1/team/roster`, `/team/agents`, `/team/agents/slots`,
+`/team/defaults/seat`, `/team/agents/interview`, behind
+`CUSTOM_AGENTS_ENABLED`), so a hire made by voice shows up in the office and the
+reverse. Interviews and hires are on paid plans; letting someone go is free.
+In a `build_with_team` build each hired specialist works right after the
+teammate they follow, says what they are doing like the rest of the team (in
+the card, in the `specialist` voice), and hands their notes to Devin and Sam;
+one who fails is skipped and the build goes on.
 
 `share_app` needs the backend's share links (`SHARE_LINKS_ENABLED` plus the org
 on `SHARE_LINKS_ORG_IDS`). A link is pinned to the version it was made for, runs

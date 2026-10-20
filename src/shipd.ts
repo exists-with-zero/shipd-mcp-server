@@ -305,4 +305,98 @@ export class ShipdClient {
     );
     return Boolean(data.cancelled);
   }
+
+  // ── staffing: the AI Team office, by conversation ────────────────────────
+  // The same routes the builder's Team office uses: who is on the team, an
+  // interview with a candidate who does not exist yet, hiring them into the
+  // pipeline, and letting anyone go (or bringing them back).
+
+  /** The team in pipeline order, who was let go, and hired people on the bench. */
+  teamRoster(projectId?: string): Promise<TeamRoster> {
+    const q = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+    return this.call<TeamRoster>("GET", `/team/roster${q}`);
+  }
+
+  /** One answer from a candidate, in character. Nothing is saved. */
+  async interviewCandidate(candidate: Candidate, question: string, history: InterviewTurn[]): Promise<string> {
+    const data = await this.call<{ answer: string }>("POST", "/team/agents/interview", {
+      name: candidate.name,
+      title: candidate.title,
+      instructions: candidate.instructions,
+      question,
+      history,
+      // Short answers, made to be heard (Shipd's older backends ignore this).
+      spoken: true,
+    });
+    return String(data.answer ?? "");
+  }
+
+  createAgent(candidate: Candidate & { blurb: string; color: string }): Promise<TeamAgent> {
+    return this.call<TeamAgent>("POST", "/team/agents", {
+      name: candidate.name,
+      title: candidate.title,
+      instructions: candidate.instructions,
+      blurb: candidate.blurb,
+      color: candidate.color,
+      mode: "deliverable",
+    });
+  }
+
+  /** Seat a hired agent after `anchor`, or bench them (anchor null). */
+  async seatAgent(agentId: string, anchor: string | null, projectId?: string): Promise<void> {
+    await this.call("PUT", "/team/agents/slots", {
+      agent_id: agentId,
+      anchor,
+      ...(projectId ? { project_id: projectId } : {}),
+    });
+  }
+
+  /** Let one of the built-in five go (fired=true) or bring them back. */
+  async setDefaultFired(role: string, fired: boolean, projectId?: string): Promise<void> {
+    await this.call("PUT", "/team/defaults/seat", {
+      role,
+      fired,
+      ...(projectId ? { project_id: projectId } : {}),
+    });
+  }
+}
+
+export interface TeamSeat {
+  key: string;
+  kind: "default" | "custom";
+  name: string;
+  title: string;
+  color?: string;
+  does?: string;
+  agentId?: string;
+  anchor?: string;
+  mode?: string;
+  scope?: "org" | "project";
+}
+
+export interface TeamAgent {
+  id: string;
+  name: string;
+  title: string;
+  color?: string;
+  blurb?: string;
+  mode?: string;
+}
+
+export interface TeamRoster {
+  pipeline: TeamSeat[];
+  fired: { key: string; name: string; title: string }[];
+  benched: TeamAgent[];
+  colors: string[];
+}
+
+export interface Candidate {
+  name: string;
+  title: string;
+  instructions: string;
+}
+
+export interface InterviewTurn {
+  role: "user" | "candidate";
+  text: string;
 }

@@ -144,7 +144,8 @@ function cleanStages(raw: unknown): TeamStage[] | undefined {
   if (!Array.isArray(raw)) return undefined;
   const out = raw
     .filter((s) => s && typeof s === "object")
-    .slice(0, 8)
+    // The five plus up to five hired specialists (the team job's own cap).
+    .slice(0, 12)
     .map((s) => ({
       key: String((s as TeamStage).key ?? "").slice(0, 20),
       name: String((s as TeamStage).name ?? "").slice(0, 30),

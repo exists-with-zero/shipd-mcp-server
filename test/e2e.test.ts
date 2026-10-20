@@ -77,9 +77,22 @@ const fake = {
   stacks: [] as string[], // the backend each generate job was asked for
   voiceOff: false,
   spoken: [] as string[],
+  // staffing: per org, hired agents and their seats, and who was let go
+  agentsOff: false,
+  agentsPaid: false, // writes refused like a free plan
+  agents: [] as { id: string; org: string; name: string; title: string; color: string; blurb: string; instructions: string; mode: string }[],
+  slots: [] as { org: string; agent: string; anchor: string; project: string | null }[],
+  fired: [] as { org: string; role: string; project: string | null }[],
+  interviews: [] as { org: string; name: string; title: string; instructions: string; question: string; history: unknown[] }[],
 };
 
 function resetFake() {
+  fake.agentsOff = false;
+  fake.agentsPaid = false;
+  fake.agents = [];
+  fake.slots = [];
+  fake.fired = [];
+  fake.interviews = [];
   fake.voiceOff = false;
   fake.spoken = [];
   fake.noRecent = false;
@@ -120,6 +133,77 @@ function fakeBackend() {
   });
   const own = (req: express.Request, res: express.Response) =>
     fake.projects.find((p) => p.id === req.params.id && p.org === res.locals.org);
+
+  // ── the Team office ───────────────────────────────────────────────────
+  const FIVE = [
+    ["pm", "Maya", "Product Manager"],
+    ["director", "Theo", "UI/UX Director"],
+    ["designer", "Ren", "UI/UX Designer"],
+    ["backend", "Devin", "Backend Engineer"],
+    ["engineer", "Sam", "Frontend Engineer"],
+    ["forward", "Kai", "Forward Engineer"],
+  ];
+  const COLORS = ["#2A6F97", "#9D4E15", "#6D28D9", "#0F766E"];
+  const agentsGate = (res: express.Response, write: boolean) => {
+    if (fake.agentsOff) return void res.status(404).json({ detail: "Custom agents are not enabled." }), true;
+    if (write && fake.agentsPaid) return void res.status(402).json({ detail: "Hiring specialists is on paid plans. Upgrade to hire." }), true;
+    return false;
+  };
+  app.get("/api/v1/team/roster", (req, res) => {
+    if (agentsGate(res, false)) return;
+    const org = res.locals.org;
+    const project = typeof req.query.project_id === "string" ? req.query.project_id : null;
+    const firedRoles = new Set(fake.fired.filter((f) => f.org === org && (f.project === null || f.project === project)).map((f) => f.role));
+    const seats = fake.slots.filter((s) => s.org === org && (s.project === null || s.project === project));
+    const pipeline: Record<string, unknown>[] = [];
+    for (const [key, name, title] of FIVE) {
+      if (!firedRoles.has(key)) pipeline.push({ key, kind: "default", name, title, color: "", does: "" });
+      for (const seat of seats.filter((x) => x.anchor === key)) {
+        const a = fake.agents.find((x) => x.id === seat.agent)!;
+        pipeline.push({ key: `custom:${a.id}`, kind: "custom", agentId: a.id, name: a.name, title: a.title, color: a.color, does: a.blurb, mode: a.mode, anchor: key, scope: seat.project ? "project" : "org" });
+      }
+    }
+    const seated = new Set(seats.map((x) => x.agent));
+    res.json({
+      pipeline,
+      fired: FIVE.filter(([k]) => firedRoles.has(k)).map(([key, name, title]) => ({ key, name, title, color: "", does: "" })),
+      benched: fake.agents.filter((a) => a.org === org && !seated.has(a.id)),
+      roles: {},
+      agents: fake.agents.filter((a) => a.org === org),
+      members: [{ user_id: "u1", name: "Owner", email: "owner@example.com" }],
+      colors: COLORS,
+      models: [],
+    });
+  });
+  app.post("/api/v1/team/agents/interview", (req, res) => {
+    if (agentsGate(res, true)) return;
+    fake.interviews.push({ org: res.locals.org, ...req.body });
+    res.json({ answer: `I'd keep it warm and short. ${String(req.body.question).slice(0, 40)}` });
+  });
+  app.post("/api/v1/team/agents", (req, res) => {
+    if (agentsGate(res, true)) return;
+    const a = { id: randomUUID(), org: res.locals.org, mode: "deliverable", ...req.body };
+    fake.agents.push(a);
+    res.json(a);
+  });
+  app.put("/api/v1/team/agents/slots", (req, res) => {
+    if (agentsGate(res, true)) return;
+    const org = res.locals.org;
+    const { agent_id, anchor, project_id } = req.body;
+    if (!fake.agents.some((a) => a.id === agent_id && a.org === org)) return void res.status(422).json({ detail: "No such agent." });
+    fake.slots = fake.slots.filter((x) => !(x.org === org && x.agent === agent_id && x.project === (project_id ?? null)));
+    if (anchor) fake.slots.push({ org, agent: agent_id, anchor, project: project_id ?? null });
+    res.json({ ok: true, anchor: anchor ?? null });
+  });
+  app.put("/api/v1/team/defaults/seat", (req, res) => {
+    if (agentsGate(res, false)) return;
+    const org = res.locals.org;
+    const { role, fired, project_id } = req.body;
+    if (!FIVE.some(([k]) => k === role)) return void res.status(422).json({ detail: "Unknown role." });
+    fake.fired = fake.fired.filter((f) => !(f.org === org && f.role === role && f.project === (project_id ?? null)));
+    if (fired) fake.fired.push({ org, role, project: project_id ?? null });
+    res.json({ ok: true, role, fired });
+  });
 
   app.post("/api/v1/voice/speak", (req, res) => {
     if (fake.voiceOff) return void res.status(404).json({ detail: "Not found" });
@@ -377,11 +461,16 @@ describe("tools", () => {
       "cancel_build",
       "check_build",
       "edit_app",
+      "fire_teammate",
       "get_app_link",
+      "hire_specialist",
+      "interview_candidate",
       "list_apps",
+      "rehire_teammate",
       "share_app",
       "speak_line",
       "stop_sharing",
+      "team_roster",
       "tell_team",
       "watch_build",
     ]);
@@ -824,6 +913,167 @@ describe("sharing", () => {
   });
 });
 
+describe("staffing the AI Team", () => {
+  const AVA = {
+    name: "Ava",
+    title: "Copywriter",
+    brief: "You write the website's words for a barbershop: warm, short, in the owner's voice.",
+  };
+
+  test("team_roster says the five in order, and never the members' emails", async () => {
+    const c = await connect(TOKEN_A);
+    const r = await callText(c, "team_roster");
+    assert.equal(
+      r.text,
+      "Your team, in order: Maya the product manager, Theo the design director, Ren the designer, Devin the backend engineer and Sam the frontend engineer.",
+    );
+    assert.doesNotMatch(JSON.stringify(r.result), /owner@example\.com|Kai/);
+    await c.close();
+  });
+
+  test("an interview answers in character and saves nothing", async () => {
+    const c = await connect(TOKEN_A);
+    const r = await callText(c, "interview_candidate", {
+      ...AVA,
+      question: "How would you write our booking page?",
+      history: [{ role: "user", text: "Hi Ava" }, { role: "candidate", text: "Hi there" }],
+    });
+    assert.match(r.text, /^Ava: I'd keep it warm and short\./);
+    assert.equal((r.result.structuredContent as { voice: string }).voice, "specialist");
+    assert.equal(fake.interviews.length, 1);
+    assert.equal(fake.interviews[0].instructions, AVA.brief);
+    assert.equal(fake.interviews[0].history.length, 2);
+    assert.equal((fake.interviews[0] as { spoken?: boolean }).spoken, true);
+    const him = await callText(c, "interview_candidate", { ...AVA, name: "Omar", voice: "man", question: "Hi?" });
+    assert.equal((him.result.structuredContent as { voice: string }).voice, "specialist_m");
+    assert.equal(fake.agents.length, 0);
+    await c.close();
+  });
+
+  test("hire_specialist creates and seats them after Maya, in their own colour", async () => {
+    const c = await connect(TOKEN_A);
+    const r = await callText(c, "hire_specialist", { ...AVA, one_line: "Website words" });
+    assert.equal(
+      r.text,
+      "Ava is on the team now, on every team build, working after Maya. From the next team build, Ava's notes go to Devin and Sam.",
+    );
+    assert.equal(fake.agents.length, 1);
+    assert.equal(fake.agents[0].blurb, "Website words");
+    assert.equal(fake.agents[0].color, "#2A6F97");
+    assert.deepEqual(fake.slots.map((s) => [s.anchor, s.project]), [["pm", null]]);
+    const roster = await callText(c, "team_roster");
+    assert.match(roster.text, /Maya the product manager, Ava the copywriter you hired, Theo the design director/);
+    // A second Ava is refused; a second hire takes the next free colour.
+    const again = await callText(c, "hire_specialist", AVA);
+    assert.match(again.text, /already on the team or the bench/);
+    await callText(c, "hire_specialist", { name: "Omar", title: "SEO Expert", brief: "You make it findable.", after: "designer" });
+    assert.equal(fake.agents[1].color, "#9D4E15");
+    assert.equal(fake.slots[1].anchor, "designer");
+    assert.match((await callText(c, "team_roster")).text, /Ren the designer, Omar the SEO expert you hired, Devin/);
+    await c.close();
+  });
+
+  test("hiring for one app seats them on that app only, and another org never sees them", async () => {
+    const app = randomUUID();
+    const c = await connect(TOKEN_A);
+    const r = await callText(c, "hire_specialist", { ...AVA, app_id: app });
+    assert.match(r.text, /on this app, working after Maya/);
+    assert.equal(fake.slots[0].project, app);
+    assert.match((await callText(c, "team_roster", { app_id: app })).text, /Ava the copywriter you hired/);
+    assert.match((await callText(c, "team_roster")).text, /Hired before but not working on builds: Ava\./);
+    // Without the app, firing asks which app instead of claiming Ava is idle.
+    const vague = await callText(c, "fire_teammate", { who: "Ava" });
+    assert.equal(vague.text, "Ava isn't on every build. If Ava works on one app, tell me which app.");
+    assert.equal(fake.slots.length, 1);
+    await callText(c, "fire_teammate", { who: "Ava", app_id: app });
+    assert.equal(fake.slots.length, 0);
+    await c.close();
+    const b = await connect(TOKEN_B);
+    assert.doesNotMatch((await callText(b, "team_roster")).text, /Ava/);
+    await b.close();
+  });
+
+  test("letting one of the five go and bringing them back", async () => {
+    const c = await connect(TOKEN_A);
+    const gone = await callText(c, "fire_teammate", { who: "Theo" });
+    assert.equal(gone.text, "Done, Theo is off the team. Team builds now go on without the look.");
+    assert.deepEqual(fake.fired.map((f) => f.role), ["director"]);
+    const roster = await callText(c, "team_roster");
+    assert.doesNotMatch(roster.text, /Theo the design director/);
+    assert.match(roster.text, /Let go: Theo\.$/);
+    const back = await callText(c, "rehire_teammate", { who: "theo" });
+    assert.equal(back.text, "Theo is back on the team.");
+    assert.deepEqual(fake.fired, []);
+    await c.close();
+  });
+
+  test("letting Sam go says nobody builds the app", async () => {
+    const c = await connect(TOKEN_A);
+    const r = await callText(c, "fire_teammate", { who: "Sam" });
+    assert.match(r.text, /With Sam gone nobody builds the app, so team builds won't start until you bring Sam back\./);
+    await c.close();
+  });
+
+  test("a hired specialist goes to the bench and comes back after whoever they pick", async () => {
+    const c = await connect(TOKEN_A);
+    await callText(c, "hire_specialist", AVA);
+    const off = await callText(c, "fire_teammate", { who: "ava" });
+    assert.equal(off.text, "Done, Ava is off the team. You can bring Ava back any time.");
+    assert.equal(fake.slots.length, 0);
+    assert.equal(fake.agents.length, 1); // benched, not deleted
+    const back = await callText(c, "rehire_teammate", { who: "Ava", after: "director" });
+    assert.equal(back.text, "Ava is back on the team, working after Theo.");
+    assert.equal(fake.slots[0].anchor, "director");
+    const twice = await callText(c, "rehire_teammate", { who: "Ava" });
+    assert.equal(twice.text, "Ava is already on the team.");
+    await c.close();
+  });
+
+  test("an unknown name hears who is on the team", async () => {
+    const c = await connect(TOKEN_A);
+    const r = await callText(c, "fire_teammate", { who: "Bob" });
+    assert.match(r.text, /^There's nobody called Bob on the team\. Your team, in order: Maya/);
+    assert.equal(fake.fired.length, 0);
+    await c.close();
+  });
+
+  test("switched off, or a free plan hiring, both say why", async () => {
+    const c = await connect(TOKEN_A);
+    fake.agentsPaid = true;
+    const free = await callText(c, "hire_specialist", AVA);
+    assert.equal(free.result.isError, true);
+    assert.match(free.text, /Upgrade to hire/);
+    assert.equal(fake.agents.length, 0);
+    // Letting someone go is free.
+    assert.match((await callText(c, "fire_teammate", { who: "Ren" })).text, /^Done, Ren is off the team/);
+    fake.agentsOff = true;
+    for (const [name, args] of [
+      ["team_roster", {}],
+      ["interview_candidate", { ...AVA, question: "Hi?" }],
+      ["hire_specialist", AVA],
+      ["fire_teammate", { who: "Theo" }],
+      ["rehire_teammate", { who: "Theo" }],
+    ] as const) {
+      const r = await callText(c, name, args);
+      assert.equal(r.result.isError, true, name);
+      assert.equal(r.text, "Hiring and firing your AI Team isn't switched on for your Shipd account yet.", name);
+    }
+    await c.close();
+  });
+
+  test("firing is marked destructive and the roster read-only", async () => {
+    const c = await connect(TOKEN_A);
+    const tools = (await c.listTools()).tools;
+    // Shipd's voice backend refuses a turn whose tool schema is over 4000 bytes.
+    for (const t of tools) assert.ok(JSON.stringify(t.inputSchema).length < 4000, `${t.name} schema too big`);
+    const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
+    assert.equal(byName.fire_teammate.annotations?.destructiveHint, true);
+    assert.equal(byName.team_roster.annotations?.readOnlyHint, true);
+    assert.equal(byName.hire_specialist.annotations?.destructiveHint, false);
+    await c.close();
+  });
+});
+
 test("lists read the way people say them", () => {
   assert.equal(spokenList([]), "");
   assert.equal(spokenList(["A"]), "A");
@@ -1187,6 +1437,24 @@ describe("the live build card", () => {
     assert.equal(sc.stage, "designer");
     assert.equal(sc.chars, 12_400);
     assert.deepEqual(sc.stages.map((s) => `${s.name}:${s.status}`), ["Maya:done", "Theo:done", "Ren:working", "Sam:pending"]);
+    await c.close();
+  });
+
+  test("a team with five hires still reports everyone, Sam last", async () => {
+    const c = await connect(TOKEN_A);
+    const task = await startTask(c, "build_with_team", { description: "A booking site for a barbershop, for walk-in clients" });
+    const job = Object.values(fake.jobs)[0];
+    const hires = ["Ava", "Omar", "Lina", "Kofi", "Mei"].map((name, i) => ({
+      key: `custom:${i}0000000-0000-0000-0000-000000000000`, name, title: "Specialist", status: "pending",
+    }));
+    job.stages = [job.stages![0], ...hires, ...job.stages!.slice(1)];
+    job.stage = hires[0].key;
+    const r = await callText(c, "check_build", { build_id: task.taskId });
+    const sc = r.result.structuredContent as { stage: string; stages: { key: string; name: string }[] };
+    assert.equal(sc.stages.length, 9);
+    assert.equal(sc.stages.at(-1)!.name, "Sam");
+    // The stage key is cut the same way in both places, so the card still finds who is at work.
+    assert.equal(sc.stages.find((s) => s.key === sc.stage)?.name, "Ava");
     await c.close();
   });
 });

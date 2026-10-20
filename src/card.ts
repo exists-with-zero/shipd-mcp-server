@@ -134,7 +134,7 @@ const SCRIPT = `
   // The voice page speaks the team's lines itself and keeps its own log, so it
   // tells the card (host context shipdVoice) to leave both out.
   var onVoicePage = false;
-  function colour(key) { return COLOURS[key] || "var(--accent)"; }
+  function colour(key, hired) { return COLOURS[key] || hired || "var(--accent)"; }
 
   function theme(t) { if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t); }
   function say(id, text) { $(id).textContent = text || ""; }
@@ -156,13 +156,13 @@ const SCRIPT = `
     people.forEach(function (p, i) {
       var s = sc.stages ? p.status : undefined; // remembered statuses are stale
       var state =
-        sc.status === "completed" || s === "done" || (at >= 0 && i < at) ? "done"
-        : s === "error" ? "error"
+        s === "error" || s === "skipped" ? "error" // skipped: a specialist who could not finish
+        : sc.status === "completed" || s === "done" || (at >= 0 && i < at) ? "done"
         : s === "working" || (at >= 0 && i === at && sc.status === "working") ? "active"
         : "waiting";
       var li = document.createElement("li");
       li.setAttribute("data-s", state);
-      li.style.setProperty("--c", colour(p.key));
+      li.style.setProperty("--c", colour(p.key, p.color));
       var head = document.createElement("div");
       head.className = "head";
       var face = document.createElement("span");
@@ -226,7 +226,7 @@ const SCRIPT = `
   // voice page, through the server's card-only speak_line tool, played with
   // Web Audio (no audio URL, so no media CSP to satisfy). If Shipd's voices
   // are not on for the account, the device's own voices read the lines.
-  var SPEAKERS = { assistant: 1, pm: 1, director: 1, designer: 1, backend: 1, engineer: 1 };
+  var SPEAKERS = { assistant: 1, pm: 1, director: 1, designer: 1, backend: 1, engineer: 1, specialist: 1 };
   var Ctx = typeof window !== "undefined" ? window.AudioContext || window.webkitAudioContext : null;
   var actx = null, polly = !!Ctx, misses = 0, gen = 0, playing = null, queue = Promise.resolve();
   function bytes(b64) {
@@ -266,7 +266,7 @@ const SCRIPT = `
     queue = queue.then(function () {
       if (!listening || mine !== gen) return;
       if (!polly || !actx || !app) return device(key, text);
-      return app.callServerTool({ name: "speak_line", arguments: { voice: SPEAKERS[key] ? key : "assistant", text: text.slice(0, 300) } })
+      return app.callServerTool({ name: "speak_line", arguments: { voice: SPEAKERS[key] ? key : /^custom:/.test(key) ? "specialist" : "assistant", text: text.slice(0, 300) } })
         .then(function (r) {
           var a = r && !r.isError && (r.content || []).filter(function (c) { return c && c.type === "audio" && c.data; })[0];
           if (!a) throw new Error("no audio");

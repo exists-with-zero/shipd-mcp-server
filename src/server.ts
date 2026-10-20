@@ -29,6 +29,7 @@ import { askBeforeBuilding } from "./ask.js";
 import { CARD_URI, cardHtml, cardMeta, cardUri } from "./card.js";
 import { askedForTask } from "./scope.js";
 import { ShipdClient, ShipdError } from "./shipd.js";
+import { registerStaffTools } from "./staff.js";
 
 export const SERVER_VERSION = "0.1.0";
 
@@ -144,7 +145,8 @@ export interface ServerOptions {
 }
 
 /** The voices speak_line knows (Shipd's /voice/speak picks the Polly voice). */
-const SPEAKERS = ["assistant", "pm", "director", "designer", "backend", "engineer"] as const;
+// "specialist": someone the person hired (a team build's "custom:" rooms).
+const SPEAKERS = ["assistant", "pm", "director", "designer", "backend", "engineer", "specialist"] as const;
 
 /** Where the person can watch their team build (Shipd's /live page), as
  * said aloud: "theshipd.com", without the https. */
@@ -578,6 +580,9 @@ export function createShipdServer(client: ShipdClient, appUrl: string, opts: Ser
       }
     },
   );
+
+  // Hiring, interviewing and letting people go: the Team office by conversation.
+  registerStaffTools(server, client);
 
   server.registerTool(
     "share_app",
